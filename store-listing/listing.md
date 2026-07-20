@@ -57,9 +57,8 @@
 
 ### `storage`
 
-サイト単位の常時ミュート設定（`chrome.storage.sync`）と、一括ミュート操作の追跡状態
-（`chrome.storage.session`）を保存するために必要です。いずれもブラウザ内にのみ
-保存され、外部サーバーへ送信されることはありません。
+サイト単位の常時ミュート設定を`chrome.storage.sync`に保存するために必要です。
+ブラウザ内にのみ保存され、外部サーバーへ送信されることはありません。
 
 ## カテゴリ（推奨）
 
@@ -67,8 +66,10 @@
 
 ## プライバシーポリシー
 
-[privacy-policy.md](privacy-policy.md)を参照。GitHub Pagesで公開したURLを
-デベロッパーダッシュボードのプライバシーポリシー欄に入力する。
+公開URL：https://momokuomomo-crypto.github.io/chrome-ext-voice-tab-controller/privacy-policy.html
+
+このURLをデベロッパーダッシュボードのプライバシーポリシー欄に入力する。
+（ソース：[privacy-policy.md](privacy-policy.md) / [docs/privacy-policy.html](../docs/privacy-policy.html)）
 
 ## スクリーンショット（要手動撮影）
 
