@@ -7,6 +7,7 @@
   <body>
     <h1>E2E音声テストページ</h1>
     <button id="play-btn" type="button">音声を再生</button>
+    <button id="stop-btn" type="button">停止</button>
     <p id="status">stopped</p>
     <script>
       let audioContext;
@@ -21,6 +22,12 @@
         gain.connect(audioContext.destination);
         oscillator.start();
         document.getElementById("status").textContent = "playing";
+      });
+
+      document.getElementById("stop-btn").addEventListener("click", () => {
+        oscillator?.stop();
+        void audioContext?.close();
+        document.getElementById("status").textContent = "stopped";
       });
     </script>
   </body>
