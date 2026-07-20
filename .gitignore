@@ -1,0 +1,11 @@
+node_modules/
+dist/
+dist-*/
+playwright-report/
+test-results/
+.ai-build-council/
+.env
+.env.*
+!.env.example
+Thumbs.db
+.DS_Store

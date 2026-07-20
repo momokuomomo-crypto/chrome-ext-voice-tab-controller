@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <title>E2E音声テストページ</title>
+  </head>
+  <body>
+    <h1>E2E音声テストページ</h1>
+    <button id="play-btn" type="button">音声を再生</button>
+    <p id="status">stopped</p>
+    <script>
+      let audioContext;
+      let oscillator;
+
+      document.getElementById("play-btn").addEventListener("click", () => {
+        audioContext = new AudioContext();
+        oscillator = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+        gain.gain.value = 0.01; // 実行環境で無音に近い音量に抑える
+        oscillator.connect(gain);
+        gain.connect(audioContext.destination);
+        oscillator.start();
+        document.getElementById("status").textContent = "playing";
+      });
+    </script>
+  </body>
+</html>

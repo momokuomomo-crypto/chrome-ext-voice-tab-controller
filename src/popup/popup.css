@@ -1,0 +1,77 @@
+body {
+  width: 320px;
+  font-family: system-ui, sans-serif;
+  margin: 0;
+  padding: 8px 12px 12px;
+}
+
+h1 {
+  font-size: 14px;
+  margin: 4px 0 8px;
+}
+
+h2 {
+  font-size: 12px;
+  margin: 8px 0 4px;
+}
+
+section {
+  margin-bottom: 12px;
+}
+
+ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 4px 0;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.tab-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.tab-state {
+  font-size: 11px;
+  color: #444;
+}
+
+button {
+  font-size: 12px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+#empty-state {
+  font-size: 12px;
+  color: #666;
+}
+
+#bulk-result,
+#host-error,
+#tab-error {
+  font-size: 11px;
+  color: #333;
+  min-height: 1em;
+}
+
+#host-error:not(:empty),
+#tab-error:not(:empty) {
+  color: #b00020;
+}
