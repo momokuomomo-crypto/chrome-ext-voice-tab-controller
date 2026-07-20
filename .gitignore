@@ -1,6 +1,7 @@
 node_modules/
 dist/
 dist-*/
+*.zip
 playwright-report/
 test-results/
 .ai-build-council/
