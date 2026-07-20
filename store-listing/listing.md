@@ -2,6 +2,12 @@
 
 デベロッパーダッシュボードの各入力欄にそのままコピーして使う想定。
 
+## 提出状況
+
+- 拡張機能ID：`ekhaiompgafbngllleejjiibfkhpedcgg`
+- ステータス：審査待ち（2026-07-21提出）
+- 公開後のストアURL（予定）：https://chromewebstore.google.com/detail/ekhaiompgafbngllleejjiibfkhpedcgg
+
 ## 拡張機能名
 
 音声タブコントローラー
