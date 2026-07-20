@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   deriveAudioState,
-  intersectWithCurrentWindow,
   isBulkMuteCandidate,
   isRelevantTab,
   isSafeToBulkUnmute,
@@ -54,7 +53,20 @@ describe("isSafeToBulkUnmute", () => {
       id: 1,
       mutedInfo: { muted: true, reason: "extension", extensionId },
     };
-    expect(isSafeToBulkUnmute(tab, new Set([1]), extensionId, noAlwaysMuteRule)).toBe(true);
+    expect(isSafeToBulkUnmute(tab, extensionId, noAlwaysMuteRule)).toBe(true);
+  });
+
+  it("[バグ修正の検証] 個別ミュートボタンで止めたタブも解除対象になる（独自の追跡集合に依存しない）", () => {
+    // 「個別ミュートボタンで止めた」「拡張機能導入前から既にミュートされていた
+    // タブに新規音声が流れた」のいずれも、Chrome上ではmutedInfo.reason=
+    // 'extension'かつextensionIdが自分自身であれば同じ状態になる。
+    // 独自の追跡集合を経由したかどうかに関わらず、この条件だけで解除可能と
+    // 判定できるべき（実運用で発見されたバグの修正）。
+    const tab = {
+      id: 999,
+      mutedInfo: { muted: true, reason: "extension", extensionId },
+    };
+    expect(isSafeToBulkUnmute(tab, extensionId, noAlwaysMuteRule)).toBe(true);
   });
 
   it("blocks unmute when user re-muted via native UI (reason=user)", () => {
@@ -62,7 +74,7 @@ describe("isSafeToBulkUnmute", () => {
       id: 1,
       mutedInfo: { muted: true, reason: "user", extensionId },
     };
-    expect(isSafeToBulkUnmute(tab, new Set([1]), extensionId, noAlwaysMuteRule)).toBe(false);
+    expect(isSafeToBulkUnmute(tab, extensionId, noAlwaysMuteRule)).toBe(false);
   });
 
   it("blocks unmute when a different extension owns the mute", () => {
@@ -70,46 +82,26 @@ describe("isSafeToBulkUnmute", () => {
       id: 1,
       mutedInfo: { muted: true, reason: "extension", extensionId: "other-ext" },
     };
-    expect(isSafeToBulkUnmute(tab, new Set([1]), extensionId, noAlwaysMuteRule)).toBe(false);
-  });
-
-  it("blocks unmute when tab is not in the tracked set", () => {
-    const tab = {
-      id: 2,
-      mutedInfo: { muted: true, reason: "extension", extensionId },
-    };
-    expect(isSafeToBulkUnmute(tab, new Set([1]), extensionId, noAlwaysMuteRule)).toBe(false);
+    expect(isSafeToBulkUnmute(tab, extensionId, noAlwaysMuteRule)).toBe(false);
   });
 
   it("blocks unmute when tab is already unmuted", () => {
     const tab = { id: 1, mutedInfo: { muted: false, reason: "extension", extensionId } };
-    expect(isSafeToBulkUnmute(tab, new Set([1]), extensionId, noAlwaysMuteRule)).toBe(false);
+    expect(isSafeToBulkUnmute(tab, extensionId, noAlwaysMuteRule)).toBe(false);
   });
 
   it("blocks unmute when mutedInfo is missing (fail-safe)", () => {
     const tab = { id: 1 };
-    expect(isSafeToBulkUnmute(tab, new Set([1]), extensionId, noAlwaysMuteRule)).toBe(false);
+    expect(isSafeToBulkUnmute(tab, extensionId, noAlwaysMuteRule)).toBe(false);
   });
 
   it("blocks unmute when tab id is undefined", () => {
     const tab = { mutedInfo: { muted: true, reason: "extension", extensionId } };
-    expect(isSafeToBulkUnmute(tab, new Set([1]), extensionId, noAlwaysMuteRule)).toBe(false);
+    expect(isSafeToBulkUnmute(tab, extensionId, noAlwaysMuteRule)).toBe(false);
   });
 
   it("blocks unmute when the always-mute rule matches", () => {
     const tab = { id: 1, mutedInfo: { muted: true, reason: "extension", extensionId } };
-    expect(isSafeToBulkUnmute(tab, new Set([1]), extensionId, alwaysMuteRule)).toBe(false);
-  });
-});
-
-describe("intersectWithCurrentWindow", () => {
-  it("keeps only ids present in the current window", () => {
-    const global = new Set([1, 2, 3]);
-    const currentWindow = new Set([2, 3, 4]);
-    expect(intersectWithCurrentWindow(global, currentWindow)).toEqual(new Set([2, 3]));
-  });
-
-  it("returns an empty set when there is no overlap", () => {
-    expect(intersectWithCurrentWindow(new Set([1]), new Set([2]))).toEqual(new Set());
+    expect(isSafeToBulkUnmute(tab, extensionId, alwaysMuteRule)).toBe(false);
   });
 });

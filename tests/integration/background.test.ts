@@ -1,32 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import chrome from "sinon-chrome";
-import type sinon from "sinon";
 import type { Request, Response } from "../../src/shared/messages";
 
 const EXTENSION_ID = "test-extension-id";
-
-/**
- * chrome.storage.sessionの簡易フェイクストア。呼び出しをまたいで値を
- * 保持する（実際のstorage.sessionと同じく、Service Worker再起動を
- * 模した`vi.resetModules()`後もデータは残る＝この関数の外側でstoreを
- * 保持することで、モジュール再ロード（SW再起動相当）とストレージの
- * 永続化を区別してテストできる）。
- */
-function wireFakeSessionStorage(): { store: Record<string, unknown> } {
-  const session = (
-    chrome.storage as unknown as {
-      session: { get: sinon.SinonStub; set: sinon.SinonStub };
-    }
-  ).session;
-  const state = { store: {} as Record<string, unknown> };
-  session.get.callsFake(async (key: string) => ({
-    [key]: state.store[key],
-  }));
-  session.set.callsFake(async (items: Record<string, unknown>) => {
-    state.store = { ...state.store, ...items };
-  });
-  return state;
-}
 
 /** background.tsを新規にロードし直し、モジュールスコープの状態をリセットする（SW再起動を模す）。 */
 async function loadBackgroundFresh(): Promise<void> {
@@ -83,7 +59,6 @@ describe("background: リスナー登録", () => {
     await loadBackgroundFresh();
     expect(chrome.runtime.onMessage.addListener.called).toBe(true);
     expect(chrome.tabs.onUpdated.addListener.called).toBe(true);
-    expect(chrome.tabs.onRemoved.addListener.called).toBe(true);
     expect(chrome.runtime.onInstalled.addListener.called).toBe(true);
     expect(chrome.runtime.onStartup.addListener.called).toBe(true);
   });
@@ -91,7 +66,6 @@ describe("background: リスナー登録", () => {
 
 describe("background: 一括ミュート／一括解除の安全性", () => {
   it("拡張機能自身が一括ミュートしたタブは一括解除できる", async () => {
-    wireFakeSessionStorage();
     await loadBackgroundFresh();
 
     const tab = makeTab({ id: 1, audible: true, mutedInfo: { muted: false } });
@@ -104,7 +78,6 @@ describe("background: 一括ミュート／一括解除の安全性", () => {
     const bulkMuteResult = await dispatch({ type: "BULK_MUTE" });
     expect(bulkMuteResult).toEqual({ type: "BULK_RESULT", result: { successCount: 1, failureCount: 0 } });
 
-    chrome.tabs.get.resolves(tab);
     const bulkUnmuteResult = await dispatch({ type: "BULK_UNMUTE" });
     expect(bulkUnmuteResult).toEqual({
       type: "BULK_RESULT",
@@ -113,50 +86,61 @@ describe("background: 一括ミュート／一括解除の安全性", () => {
     expect(chrome.tabs.update.lastCall.args).toEqual([1, { muted: false }]);
   });
 
-  it("セッション集合に含まれていてもreason==='user'なら解除しない", async () => {
-    wireFakeSessionStorage();
+  it("[バグ修正の検証] 個別ミュートボタンで既にミュートされていたタブも一括解除できる（独自の追跡集合に依存しない）", async () => {
+    // 実際のバグ報告の再現：①タブが既にミュートされている（個別ミュート
+    // ボタン経由、またはそれ以前からの状態）②新規に音声が流れ始める
+    // ③一括解除を押す、という手順で、以前の実装は「一括ミュートボタンで
+    // 止めた」場合しか追跡していなかったため解除できなかった。
     await loadBackgroundFresh();
 
-    const tab = makeTab({ id: 1, audible: true, mutedInfo: { muted: false } });
+    const tab = makeTab({
+      id: 5,
+      audible: true, // 新規に音声が流れ始めた
+      mutedInfo: { muted: true, reason: "extension", extensionId: EXTENSION_ID }, // 個別ミュート等で既にミュート済み
+    });
     chrome.tabs.query.resolves([tab]);
     chrome.tabs.update.callsFake(async (tabId: number, props: { muted: boolean }) => {
       tab.mutedInfo = { muted: props.muted, reason: "extension", extensionId: EXTENSION_ID };
       return tab;
     });
-    await dispatch({ type: "BULK_MUTE" });
 
-    // ユーザーがネイティブUIで手動再ミュートした状態を模倣する。
-    tab.mutedInfo = { muted: true, reason: "user", extensionId: undefined };
-    chrome.tabs.get.resolves(tab);
+    // 一括ミュートボタンは経由していない状態で、いきなり一括解除を押す。
+    const result = await dispatch({ type: "BULK_UNMUTE" });
+    expect(result).toEqual({ type: "BULK_RESULT", result: { successCount: 1, failureCount: 0 } });
+    expect(tab.mutedInfo.muted).toBe(false);
+  });
+
+  it("セッション集合に含まれていてもreason==='user'なら解除しない", async () => {
+    await loadBackgroundFresh();
+
+    const tab = makeTab({
+      id: 1,
+      audible: true,
+      mutedInfo: { muted: true, reason: "user", extensionId: undefined },
+    });
+    chrome.tabs.query.resolves([tab]);
 
     const result = await dispatch({ type: "BULK_UNMUTE" });
-    expect(result).toEqual({ type: "BULK_RESULT", result: { successCount: 0, failureCount: 1 } });
-    // update呼び出しは一括ミュート時の1回のみで、解除は実行されていない。
-    expect(chrome.tabs.update.callCount).toBe(1);
+    expect(result).toEqual({ type: "BULK_RESULT", result: { successCount: 0, failureCount: 0 } });
+    expect(chrome.tabs.update.called).toBe(false);
   });
 
   it("extensionIdが別拡張なら解除しない", async () => {
-    wireFakeSessionStorage();
     await loadBackgroundFresh();
 
-    const tab = makeTab({ id: 1, audible: true, mutedInfo: { muted: false } });
-    chrome.tabs.query.resolves([tab]);
-    chrome.tabs.update.callsFake(async (tabId: number, props: { muted: boolean }) => {
-      tab.mutedInfo = { muted: props.muted, reason: "extension", extensionId: EXTENSION_ID };
-      return tab;
+    const tab = makeTab({
+      id: 1,
+      audible: true,
+      mutedInfo: { muted: true, reason: "extension", extensionId: "some-other-extension" },
     });
-    await dispatch({ type: "BULK_MUTE" });
-
-    tab.mutedInfo = { muted: true, reason: "extension", extensionId: "some-other-extension" };
-    chrome.tabs.get.resolves(tab);
+    chrome.tabs.query.resolves([tab]);
 
     const result = await dispatch({ type: "BULK_UNMUTE" });
-    expect(result).toEqual({ type: "BULK_RESULT", result: { successCount: 0, failureCount: 1 } });
-    expect(chrome.tabs.update.callCount).toBe(1);
+    expect(result).toEqual({ type: "BULK_RESULT", result: { successCount: 0, failureCount: 0 } });
+    expect(chrome.tabs.update.called).toBe(false);
   });
 
   it("常時ミュート規則に該当するタブは一括解除しない", async () => {
-    wireFakeSessionStorage();
     chrome.storage.sync.get.resolves({
       alwaysMuteSettingsV1: { version: 1, alwaysMutedHosts: ["example.com"] },
     });
@@ -166,98 +150,50 @@ describe("background: 一括ミュート／一括解除の安全性", () => {
       id: 1,
       audible: true,
       url: "https://example.com/",
-      mutedInfo: { muted: false },
+      mutedInfo: { muted: true, reason: "extension", extensionId: EXTENSION_ID },
     });
     chrome.tabs.query.resolves([tab]);
-    chrome.tabs.update.callsFake(async (tabId: number, props: { muted: boolean }) => {
-      tab.mutedInfo = { muted: props.muted, reason: "extension", extensionId: EXTENSION_ID };
-      return tab;
-    });
-    await dispatch({ type: "BULK_MUTE" });
 
-    chrome.tabs.get.resolves(tab);
     const result = await dispatch({ type: "BULK_UNMUTE" });
-    expect(result).toEqual({ type: "BULK_RESULT", result: { successCount: 0, failureCount: 1 } });
+    expect(result).toEqual({ type: "BULK_RESULT", result: { successCount: 0, failureCount: 0 } });
+    expect(chrome.tabs.update.called).toBe(false);
   });
 
-  it("一括解除の対象は現在のウィンドウに限定される（グローバル集合との積集合）", async () => {
-    wireFakeSessionStorage();
+  it("一括解除の対象は現在のウィンドウのタブに限定される", async () => {
     await loadBackgroundFresh();
 
-    const tabInWindow1 = makeTab({ id: 1, windowId: 1, audible: true, mutedInfo: { muted: false } });
-    chrome.tabs.query.withArgs({ currentWindow: true }).resolves([tabInWindow1]);
-    chrome.tabs.update.callsFake(async (tabId: number, props: { muted: boolean }) => {
-      tabInWindow1.mutedInfo = { muted: props.muted, reason: "extension", extensionId: EXTENSION_ID };
-      return tabInWindow1;
-    });
-    await dispatch({ type: "BULK_MUTE" });
-
-    // タブが別ウィンドウへ移動した状況を模倣する（IDは維持されるがwindowIdが変わる）。
-    const movedTab = { ...tabInWindow1, windowId: 2 };
-    // 「現在のウィンドウ」は別ウィンドウ(id=1)のままで、movedTabはもうそこにいない。
+    // 現在のウィンドウには対象タブがいない（別ウィンドウにいる想定）。
     chrome.tabs.query.withArgs({ currentWindow: true }).resolves([]);
-    chrome.tabs.get.resolves(movedTab);
 
     const result = await dispatch({ type: "BULK_UNMUTE" });
-    // 現在のウィンドウには対象タブがいないため、解除処理そのものが発生しない。
     expect(result).toEqual({ type: "BULK_RESULT", result: { successCount: 0, failureCount: 0 } });
+    expect(chrome.tabs.update.called).toBe(false);
   });
 
   it("タブ消滅やAPIエラーを安全にスキップし、他タブの処理を継続する", async () => {
-    wireFakeSessionStorage();
     await loadBackgroundFresh();
 
-    const tabA = makeTab({ id: 1, audible: true, mutedInfo: { muted: false } });
-    const tabB = makeTab({ id: 2, audible: true, mutedInfo: { muted: false } });
-    chrome.tabs.query.resolves([tabA, tabB]);
-    chrome.tabs.update.callsFake(async (tabId: number, props: { muted: boolean }) => {
-      const tab = tabId === 1 ? tabA : tabB;
-      tab.mutedInfo = { muted: props.muted, reason: "extension", extensionId: EXTENSION_ID };
-      return tab;
+    const tabA = makeTab({
+      id: 1,
+      audible: true,
+      mutedInfo: { muted: true, reason: "extension", extensionId: EXTENSION_ID },
     });
-    await dispatch({ type: "BULK_MUTE" });
-
-    chrome.tabs.get.withArgs(1).rejects(new Error("no tab"));
-    chrome.tabs.get.withArgs(2).resolves(tabB);
+    const tabB = makeTab({
+      id: 2,
+      audible: true,
+      mutedInfo: { muted: true, reason: "extension", extensionId: EXTENSION_ID },
+    });
+    chrome.tabs.query.resolves([tabA, tabB]);
+    chrome.tabs.update.withArgs(1).rejects(new Error("no tab"));
+    chrome.tabs.update.withArgs(2).resolves(tabB);
 
     const result = await dispatch({ type: "BULK_UNMUTE" });
     expect(result).toEqual({ type: "BULK_RESULT", result: { successCount: 1, failureCount: 1 } });
-  });
-
-  it("[blocker修正の検証] Service Worker再起動後も、一括ミュートしたタブを一括解除できる", async () => {
-    const session = wireFakeSessionStorage();
-    await loadBackgroundFresh();
-
-    const tab = makeTab({ id: 42, audible: true, mutedInfo: { muted: false } });
-    chrome.tabs.query.resolves([tab]);
-    chrome.tabs.update.callsFake(async (tabId: number, props: { muted: boolean }) => {
-      tab.mutedInfo = { muted: props.muted, reason: "extension", extensionId: EXTENSION_ID };
-      return tab;
-    });
-
-    const bulkMuteResult = await dispatch({ type: "BULK_MUTE" });
-    expect(bulkMuteResult).toEqual({ type: "BULK_RESULT", result: { successCount: 1, failureCount: 0 } });
-    // storage.sessionに実際に書き込まれている（インメモリ変数ではなく永続化先を使っている証跡）。
-    expect(session.store.bulkMuteTabIdsV1).toEqual([42]);
-
-    // Service Workerの再起動を模す：モジュールを再ロードし、インメモリ状態を
-    // 全て破棄する。ただしstorage.sessionのフェイクストア（session.store）は
-    // このテスト関数のクロージャ内に残り続けるため、実際のブラウザにおける
-    // 「SWは再起動するがstorage.sessionは保持される」を再現できる。
-    await loadBackgroundFresh();
-
-    chrome.tabs.get.resolves(tab);
-    const bulkUnmuteResult = await dispatch({ type: "BULK_UNMUTE" });
-    expect(bulkUnmuteResult).toEqual({
-      type: "BULK_RESULT",
-      result: { successCount: 1, failureCount: 0 },
-    });
   });
 });
 
 describe("background: storageの安全性", () => {
   it("storage全体が破損している場合は空規則にフォールバックする", async () => {
-    wireFakeSessionStorage();
     chrome.storage.sync.get.resolves({ alwaysMuteSettingsV1: "not-an-object" });
     await loadBackgroundFresh();
 
@@ -266,7 +202,6 @@ describe("background: storageの安全性", () => {
   });
 
   it("容量超過時は既存のstorage.sync.setを呼ばずに失敗を返す", async () => {
-    wireFakeSessionStorage();
     chrome.storage.sync.get.resolves({
       alwaysMuteSettingsV1: { version: 1, alwaysMutedHosts: ["example.com"] },
     });
@@ -281,7 +216,6 @@ describe("background: storageの安全性", () => {
   });
 
   it("storage.sync.get()自体が失敗しても空設定へフォールボックし、メッセージ応答が返る", async () => {
-    wireFakeSessionStorage();
     chrome.storage.sync.get.rejects(new Error("storage unavailable"));
     await loadBackgroundFresh();
 
@@ -290,7 +224,6 @@ describe("background: storageの安全性", () => {
   });
 
   it("不正なホスト名（URL全体やポート付き）は登録前に拒否される", async () => {
-    wireFakeSessionStorage();
     await loadBackgroundFresh();
 
     const result = await dispatch({
@@ -302,7 +235,6 @@ describe("background: storageの安全性", () => {
   });
 
   it("常時ミュート規則の追加と削除を並行実行しても更新が失われない", async () => {
-    wireFakeSessionStorage();
     // 実際のstorage.syncのように、set()した値を後続のget()が返すフェイクにする。
     let stored: unknown = { version: 1, alwaysMutedHosts: ["existing.com"] };
     chrome.storage.sync.get.callsFake(async () => ({ alwaysMuteSettingsV1: stored }));
@@ -329,7 +261,6 @@ describe("background: storageの安全性", () => {
 
 describe("background: 常時ミュートの多層防御", () => {
   it("常時ミュート対象タブはTOGGLE_TAB_MUTEでも解除できない（サーバー側の防御）", async () => {
-    wireFakeSessionStorage();
     chrome.storage.sync.get.resolves({
       alwaysMuteSettingsV1: { version: 1, alwaysMutedHosts: ["example.com"] },
     });
@@ -348,7 +279,6 @@ describe("background: 常時ミュートの多層防御", () => {
   });
 
   it("常時ミュート対象サイトでネイティブUI相当の解除が行われると再ミュートする", async () => {
-    wireFakeSessionStorage();
     chrome.storage.sync.get.resolves({
       alwaysMuteSettingsV1: { version: 1, alwaysMutedHosts: ["example.com"] },
     });
@@ -373,7 +303,6 @@ describe("background: 常時ミュートの多層防御", () => {
   });
 
   it("常時ミュート対象でないタブの通常のミュート変更では再ミュートしない", async () => {
-    wireFakeSessionStorage();
     await loadBackgroundFresh();
 
     const tab = makeTab({ id: 8, url: "https://not-muted.com/", mutedInfo: { muted: false } });
@@ -392,9 +321,8 @@ describe("background: 常時ミュートの多層防御", () => {
   });
 });
 
-describe("background: onUpdated/onRemovedによる常時ミュート適用", () => {
+describe("background: onUpdatedによる常時ミュート適用", () => {
   it("常時ミュート対象サイトへの遷移でタブを自動ミュートする", async () => {
-    wireFakeSessionStorage();
     chrome.storage.sync.get.resolves({
       alwaysMuteSettingsV1: { version: 1, alwaysMutedHosts: ["example.com"] },
     });
@@ -415,35 +343,10 @@ describe("background: onUpdated/onRemovedによる常時ミュート適用", () 
       expect(chrome.tabs.update.calledWith(5, { muted: true })).toBe(true);
     });
   });
-
-  it("タブが閉じられたら一括ミュート追跡集合から除去する（onRemoved）", async () => {
-    wireFakeSessionStorage();
-    await loadBackgroundFresh();
-
-    const tab = makeTab({ id: 9, audible: true, mutedInfo: { muted: false } });
-    chrome.tabs.query.resolves([tab]);
-    chrome.tabs.update.callsFake(async (tabId: number, props: { muted: boolean }) => {
-      tab.mutedInfo = { muted: props.muted, reason: "extension", extensionId: EXTENSION_ID };
-      return tab;
-    });
-    await dispatch({ type: "BULK_MUTE" });
-
-    const onRemovedListener = chrome.tabs.onRemoved.addListener.lastCall.args[0] as (
-      tabId: number
-    ) => void;
-    onRemovedListener(9);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
-    chrome.tabs.get.resolves(tab);
-    const result = await dispatch({ type: "BULK_UNMUTE" });
-    // 既に追跡集合から除去されているため、対象0件で解除処理自体が走らない。
-    expect(result).toEqual({ type: "BULK_RESULT", result: { successCount: 0, failureCount: 0 } });
-  });
 });
 
 describe("background: 主要メッセージのディスパッチ", () => {
   it("GET_TAB_LISTは音声関連タブだけを状態つきで返す", async () => {
-    wireFakeSessionStorage();
     await loadBackgroundFresh();
 
     const audibleTab = makeTab({ id: 1, title: "再生中タブ", audible: true, mutedInfo: { muted: false } });
@@ -458,7 +361,6 @@ describe("background: 主要メッセージのディスパッチ", () => {
   });
 
   it("TOGGLE_TAB_MUTEは対象タブのミュート状態を反転する", async () => {
-    wireFakeSessionStorage();
     await loadBackgroundFresh();
 
     const tab = makeTab({ id: 3, mutedInfo: { muted: false } });
@@ -471,7 +373,6 @@ describe("background: 主要メッセージのディスパッチ", () => {
   });
 
   it("REMOVE_ALWAYS_MUTE_HOSTは規則から該当ホストを取り除く", async () => {
-    wireFakeSessionStorage();
     let stored: unknown = { version: 1, alwaysMutedHosts: ["example.com", "other.com"] };
     chrome.storage.sync.get.callsFake(async () => ({ alwaysMuteSettingsV1: stored }));
     chrome.storage.sync.set.callsFake(async (items: Record<string, unknown>) => {

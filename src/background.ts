@@ -8,7 +8,6 @@ import {
 } from "./shared/site-rules";
 import {
   deriveAudioState,
-  intersectWithCurrentWindow,
   isBulkMuteCandidate,
   isRelevantTab,
   isSafeToBulkUnmute,
@@ -20,31 +19,6 @@ import type {
   Response,
   TabRow,
 } from "./shared/messages";
-
-/**
- * 一括ミュートで拡張機能がミュートしたタブIDの集合（ウィンドウ非依存）を
- * chrome.storage.sessionへ保存する。MV3のService Workerは非操作状態が
- * 続くと（目安30秒程度で）終了・再起動されるため、モジュールスコープの
- * インメモリ変数では実運用下で高確率に消失し、一括解除が機能しなくなる
- * （実装レビューで発見されたblocker）。storage.sessionはSW再起動を
- * またいで保持され、ブラウザ終了時にのみ消える。
- * 解除の最終判定はmutedInfo.reason/extensionIdに委ねているため、
- * この集合自体はあくまで「一括ミュート由来か」の内部区別用途にとどまる。
- */
-const BULK_MUTE_SESSION_KEY = "bulkMuteTabIdsV1";
-
-async function loadBulkMuteTabIds(): Promise<Set<number>> {
-  const result = await chrome.storage.session.get(BULK_MUTE_SESSION_KEY);
-  const raw = result[BULK_MUTE_SESSION_KEY];
-  if (!Array.isArray(raw)) return new Set();
-  return new Set(raw.filter((v): v is number => typeof v === "number"));
-}
-
-async function saveBulkMuteTabIds(ids: ReadonlySet<number>): Promise<void> {
-  await chrome.storage.session.set({
-    [BULK_MUTE_SESSION_KEY]: Array.from(ids),
-  });
-}
 
 /**
  * 常時ミュート設定への書き込みを直列化する。ADD/REMOVEが並行実行されると
@@ -94,15 +68,6 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.mutedInfo?.muted === false) {
     void applyAlwaysMuteRuleToTab(tabId, tab.url);
   }
-});
-
-chrome.tabs.onRemoved.addListener((tabId) => {
-  void (async () => {
-    const ids = await loadBulkMuteTabIds();
-    if (ids.delete(tabId)) {
-      await saveBulkMuteTabIds(ids);
-    }
-  })();
 });
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -212,13 +177,6 @@ async function toggleTabMute(tabId: number): Promise<boolean> {
     }
 
     await chrome.tabs.update(tabId, { muted: nextMuted });
-    if (!nextMuted) {
-      // 個別解除されたタブは一括解除の追跡対象から外す。
-      const ids = await loadBulkMuteTabIds();
-      if (ids.delete(tabId)) {
-        await saveBulkMuteTabIds(ids);
-      }
-    }
     return true;
   } catch {
     return false;
@@ -242,78 +200,8 @@ async function bulkMuteCurrentWindow(): Promise<OperationResult> {
     candidates.map((tab) => chrome.tabs.update(tab.id, { muted: true }))
   );
 
-  const bulkMuteTabIds = await loadBulkMuteTabIds();
   let successCount = 0;
   let failureCount = 0;
-  results.forEach((result, index) => {
-    const tab = candidates[index];
-    if (tab === undefined) return;
-    if (result.status === "fulfilled") {
-      bulkMuteTabIds.add(tab.id);
-      successCount += 1;
-    } else {
-      failureCount += 1;
-    }
-  });
-  await saveBulkMuteTabIds(bulkMuteTabIds);
-
-  return { successCount, failureCount };
-}
-
-async function bulkUnmuteCurrentWindow(): Promise<OperationResult> {
-  const extensionId = chrome.runtime.id;
-  const settings = await loadSettingsSafely();
-  const bulkMuteTabIds = await loadBulkMuteTabIds();
-
-  const windowTabs = await chrome.tabs.query({ currentWindow: true });
-  const currentWindowTabIds = new Set(
-    windowTabs.map((tab) => tab.id).filter((id): id is number => id !== undefined)
-  );
-
-  // 一括解除の実行対象は「現在のウィンドウ」に限定する（凍結設計の裁定）。
-  // bulkMuteTabIdsはウィンドウ非依存のグローバル集合だが、UIのスコープは
-  // 常に「今見えているタブ」に保つため積集合を取る。
-  const candidateIds = intersectWithCurrentWindow(bulkMuteTabIds, currentWindowTabIds);
-
-  let successCount = 0;
-  let failureCount = 0;
-  const idsToRemove = new Set<number>();
-
-  const results = await Promise.allSettled(
-    Array.from(candidateIds).map(async (tabId) => {
-      let tab: chrome.tabs.Tab;
-      try {
-        tab = await chrome.tabs.get(tabId);
-      } catch {
-        idsToRemove.add(tabId);
-        throw new Error("tab-not-found");
-      }
-
-      const tabLike: TabLike = {
-        id: tab.id,
-        url: tab.url,
-        audible: tab.audible,
-        mutedInfo: tab.mutedInfo
-          ? { muted: tab.mutedInfo.muted, reason: tab.mutedInfo.reason, extensionId: tab.mutedInfo.extensionId }
-          : undefined,
-      };
-
-      if (
-        !isSafeToBulkUnmute(tabLike, bulkMuteTabIds, extensionId, (url) =>
-          isAlwaysMutedUrl(url, settings)
-        )
-      ) {
-        // 安全条件を満たさない（ユーザーが再ミュートした等）。
-        // 追跡対象からは外し、解除もしない。
-        idsToRemove.add(tabId);
-        throw new Error("not-safe-to-unmute");
-      }
-
-      await chrome.tabs.update(tabId, { muted: false });
-      idsToRemove.add(tabId);
-    })
-  );
-
   for (const result of results) {
     if (result.status === "fulfilled") {
       successCount += 1;
@@ -322,9 +210,50 @@ async function bulkUnmuteCurrentWindow(): Promise<OperationResult> {
     }
   }
 
-  if (idsToRemove.size > 0) {
-    for (const id of idsToRemove) bulkMuteTabIds.delete(id);
-    await saveBulkMuteTabIds(bulkMuteTabIds);
+  return { successCount, failureCount };
+}
+
+/**
+ * 一括解除は、独自の追跡状態を一切持たず、常にChromeの一次情報
+ * （mutedInfo.reason / mutedInfo.extensionId）だけを根拠に判定する。
+ * 対象は「現在のウィンドウで、かつ拡張機能自身が現在のミュート所有者
+ * であるタブ」の全てであり、それが一括ミュート経由か個別ミュート
+ * ボタン経由かは問わない。これにより、以前の実装が抱えていた
+ * 「独自の追跡集合に載っていない限り解除できない」という過剰な制限
+ * （実運用で発見されたバグ）を解消する。ユーザーのネイティブ操作・
+ * 他拡張機能によるミュート・常時ミュート規則は、いずれもこの条件を
+ * 満たさないため引き続き保護される。
+ */
+async function bulkUnmuteCurrentWindow(): Promise<OperationResult> {
+  const extensionId = chrome.runtime.id;
+  const settings = await loadSettingsSafely();
+
+  const windowTabs = await chrome.tabs.query({ currentWindow: true });
+  const candidates = windowTabs.filter((tab): tab is chrome.tabs.Tab & { id: number } => {
+    if (tab.id === undefined) return false;
+    const tabLike: TabLike = {
+      id: tab.id,
+      url: tab.url,
+      audible: tab.audible,
+      mutedInfo: tab.mutedInfo
+        ? { muted: tab.mutedInfo.muted, reason: tab.mutedInfo.reason, extensionId: tab.mutedInfo.extensionId }
+        : undefined,
+    };
+    return isSafeToBulkUnmute(tabLike, extensionId, (url) => isAlwaysMutedUrl(url, settings));
+  });
+
+  const results = await Promise.allSettled(
+    candidates.map((tab) => chrome.tabs.update(tab.id, { muted: false }))
+  );
+
+  let successCount = 0;
+  let failureCount = 0;
+  for (const result of results) {
+    if (result.status === "fulfilled") {
+      successCount += 1;
+    } else {
+      failureCount += 1;
+    }
   }
 
   return { successCount, failureCount };
