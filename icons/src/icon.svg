@@ -1,0 +1,10 @@
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <rect width="128" height="128" rx="28" fill="#2563eb"/>
+  <!-- スピーカー本体 -->
+  <path d="M40 50 H54 L74 34 V94 L54 78 H40 Z" fill="#ffffff"/>
+  <!-- 音波（ミュートスラッシュと共存する2本のアーク） -->
+  <path d="M84 46 A26 26 0 0 1 84 82" stroke="#ffffff" stroke-width="7" stroke-linecap="round" fill="none"/>
+  <path d="M92 38 A38 38 0 0 1 92 90" stroke="#ffffff" stroke-width="7" stroke-linecap="round" fill="none" opacity="0.6"/>
+  <!-- ミュートスラッシュ（コントロール可能であることを示す斜線） -->
+  <line x1="30" y1="98" x2="98" y2="30" stroke="#f97316" stroke-width="9" stroke-linecap="round"/>
+</svg>
