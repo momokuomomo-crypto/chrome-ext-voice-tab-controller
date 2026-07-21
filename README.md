@@ -67,6 +67,17 @@ e2e/
   fixtures/audio-page.html      # E2E・手動確認用の音声再生テストページ
 ```
 
+## 収益化方法
+
+無料版で提供。Pro版で曜日別ルール・許可リスト同期を提供する。
+
+## 将来の拡張案
+
+- 勤務時間のみミュート
+- 音声タブ履歴
+
+出典：[稟議書_Chrome拡張機能アイデア.md（項目7）](https://github.com/momokuomomo-crypto/ai-council-output/blob/master/chrome-extension-ideas/稟議書_Chrome拡張機能アイデア.md)
+
 ## 開発の経緯
 
 このリポジトリの設計・実装は
